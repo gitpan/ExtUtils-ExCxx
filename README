@@ -36,7 +36,20 @@ release.  Either apply stage* or the whole.patch to 5.004_56.
 =head2 ALSO
 
 call_list has been optimized to call TRYBLOCK only once instead of
-doing it for each BEGIN or END block.
+doing it for each BEGIN or END block.  However:
+
+static void
+try_calllist_normal0(void *locals, void *ret)
+{
+    AV *list = TRY_CALLLIST_LOCAL(list);
+
+    while (AvFILL(list) >= 0) {
+	CV *cv = (CV*)av_shift(list);
+	SAVEFREESV(cv);
+	PUSHMARK(stack_sp);
+	perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);  # hm, still G_EVAL...?
+    }
+}
 
 Sigsetjmp_t stuff was moved out of JMPENV and all JMPENV manipulation
 now goes through macros.
