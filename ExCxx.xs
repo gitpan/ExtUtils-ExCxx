@@ -32,17 +32,14 @@ static void cxx_jump()
 { throw PerlExCxxToken(); }
 
 static void
-cxx_tryblock(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret)
+cxx_tryblock(TRYVTBL *vtbl, void *locals, void *ret)
 {
-    je->je_jump = cxx_jump;
-    je->je_prev = top_env;
-    je->je_ret = JMP_NORMAL;
-    OP_REG_TO_MEM; /*unnecessary?*/
+    JMPENV je;
+    JMPENV_INIT(je, cxx_jump);
  RESTART:
-    je->je_mustcatch = FALSE;
-    top_env = je;
+    JMPENV_TRY(je);
     try {
-      switch (je->je_ret) {
+      switch (JMPENV_RET(je)) {
       case JMP_NORMAL:
 	if (vtbl->try_normal[0])
 	  (*vtbl->try_normal[0])(locals,ret);
@@ -55,14 +52,16 @@ cxx_tryblock(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret)
 	if (vtbl->try_myexit[0])
 	  (*vtbl->try_myexit[0])(locals,ret);
 	break;
+      default: 
+	fprintf(stderr, "tryblock ABNORMAL\n");
+	exit(1);
       }
     } catch (...) { 
-      assert(je->je_ret != JMP_NORMAL);
-      OP_MEM_TO_REG;
+      assert(JMPENV_RET(je) != JMP_NORMAL);
       goto RESTART; 
     }
-    top_env = je->je_prev;
-    switch (je->je_ret) {
+    JMPENV_POP(je);
+    switch (JMPENV_RET(je)) {
     case JMP_NORMAL:
       if (vtbl->try_normal[1])
 	(*vtbl->try_normal[1])(locals,ret);

@@ -1,0 +1,394 @@
+Index: perl.c
+*** perl5.004_56/perl.c	Tue Jan 27 08:50:45 1998
+--- src/perl.c	Tue Jan 27 09:26:45 1998
+***************
+*** 931,937 ****
+      };
+      TRY_PARSE_LOCALS locals = { xsinit, argc, argv, env };
+      dTHR;
+-     dJMPENV;
+      int ret;
+  
+  #ifdef SETUID_SCRIPTS_ARE_SECURE_NOW
+--- 931,936 ----
+***************
+*** 981,987 ****
+      time(&basetime);
+      locals.oldscope = scopestack_ix;
+  
+!     TRYBLOCKi(cur_env, locals, ParseVtbl, ret);
+  
+      return ret;
+  }
+--- 980,986 ----
+      time(&basetime);
+      locals.oldscope = scopestack_ix;
+  
+!     TRYBLOCKi(ParseVtbl, locals, ret);
+  
+      return ret;
+  }
+***************
+*** 1078,1090 ****
+      };
+      dTHR;
+      TRY_RUN_LOCALS locals = { scopestack_ix };
+-     dJMPENV;
+      int ret;
+  
+      if (!(curinterp = sv_interp))
+  	return 255;
+  
+!     TRYBLOCKi(cur_env, locals, RunVtbl, ret);
+  
+      return ret;
+  }
+--- 1077,1088 ----
+      };
+      dTHR;
+      TRY_RUN_LOCALS locals = { scopestack_ix };
+      int ret;
+  
+      if (!(curinterp = sv_interp))
+  	return 255;
+  
+!     TRYBLOCKi(RunVtbl, locals, ret);
+  
+      return ret;
+  }
+***************
+*** 1312,1319 ****
+      SV** sp = stack_sp;
+      I32 retval;
+      static CV *DBcv;
+-     bool oldcatch = CATCH_GET;
+-     dJMPENV;
+  
+      if (flags & G_DISCARD) {
+  	ENTER;
+--- 1310,1315 ----
+***************
+*** 1366,1374 ****
+  		sv_setpv(ERRSV,"");
+  	}
+  	markstack_ptr++;
+! 	TRYBLOCKi(cur_env, locals, CallsvVtbl, retval);
+  
+      } else { /* G_EVAL */
+  	CATCH_SET(TRUE);
+  	try_callsv_runops0(&locals, &retval);
+  	CATCH_SET(oldcatch);
+--- 1362,1371 ----
+  		sv_setpv(ERRSV,"");
+  	}
+  	markstack_ptr++;
+! 	TRYBLOCKi(CallsvVtbl, locals, retval);
+  
+      } else { /* G_EVAL */
++ 	bool oldcatch = CATCH_GET;
+  	CATCH_SET(TRUE);
+  	try_callsv_runops0(&locals, &retval);
+  	CATCH_SET(oldcatch);
+***************
+*** 1471,1477 ****
+      UNOP myop;		/* fake syntax tree node */
+      SV** sp = stack_sp;
+      I32 retval;
+-     dJMPENV;
+      TRY_EVALSV_LOCALS locals = { flags, (OP*)&myop, op, 0, sp - stack_base };
+  
+      if (flags & G_DISCARD) {
+--- 1468,1473 ----
+***************
+*** 1496,1502 ****
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     TRYBLOCKi(cur_env, locals, EvalsvVtbl, retval);
+  
+      return retval;
+  }
+--- 1492,1498 ----
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     TRYBLOCKi(EvalsvVtbl, locals, retval);
+  
+      return retval;
+  }
+***************
+*** 2977,2983 ****
+  struct try_calllist_locals {
+      I32 oldscope;
+      AV *list;
+-     CV *cv;
+      line_t oldline;
+  };
+  typedef struct try_calllist_locals TRY_CALLLIST_LOCALS;
+--- 2973,2978 ----
+***************
+*** 2986,2995 ****
+  static void
+  try_calllist_normal0(void *locals, void *ret)
+  {
+!     CV *cv = TRY_CALLLIST_LOCAL(cv);
+  
+!     PUSHMARK(stack_sp);
+!     perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
+  }
+  
+  static void
+--- 2981,2994 ----
+  static void
+  try_calllist_normal0(void *locals, void *ret)
+  {
+!     AV *list = TRY_CALLLIST_LOCAL(list);
+  
+!     while (AvFILL(list) >= 0) {
+! 	CV *cv = (CV*)av_shift(list);
+! 	SAVEFREESV(cv);
+! 	PUSHMARK(stack_sp);
+! 	perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
+!     }
+  }
+  
+  static void
+***************
+*** 3071,3084 ****
+  	try_calllist_myexit0,	try_calllist_myexit1
+      };
+      dTHR;
+!     TRY_CALLLIST_LOCALS locals = { oldscope, list, 0, curcop->cop_line };
+!     dJMPENV;
+! 
+!     while (AvFILL(list) >= 0) {
+! 	locals.cv = (CV*)av_shift(list);
+! 	SAVEFREESV(locals.cv);
+! 	TRYBLOCK(cur_env, locals, CalllistVtbl);  /*hoist? XXX*/
+!     }
+  }
+  
+  void
+--- 3070,3077 ----
+  	try_calllist_myexit0,	try_calllist_myexit1
+      };
+      dTHR;
+!     TRY_CALLLIST_LOCALS locals = { oldscope, list, curcop->cop_line };
+!     TRYBLOCK(CalllistVtbl, locals);
+  }
+  
+  void
+Index: pp_ctl.c
+*** perl5.004_56/pp_ctl.c	Tue Jan 27 08:48:39 1998
+--- src/pp_ctl.c	Tue Jan 27 08:59:42 1998
+***************
+*** 2120,2126 ****
+      };
+      dTHR;
+      TRY_DOCATCH_LOCALS locals = { op };
+-     dJMPENV;
+  
+      op = o;
+  #ifdef DEBUGGING
+--- 2120,2125 ----
+***************
+*** 2128,2134 ****
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+  
+!     TRYBLOCK(cur_env, locals, DocatchVtbl);
+  
+      op = locals.oldop;
+      return Nullop;
+--- 2127,2133 ----
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+  
+!     TRYBLOCK(DocatchVtbl, locals);
+  
+      op = locals.oldop;
+      return Nullop;
+Index: proto.h
+*** perl5.004_56/proto.h	Tue Jan 27 08:48:40 1998
+--- src/proto.h	Tue Jan 27 09:01:13 1998
+***************
+*** 462,468 ****
+  I32	setenv_getix _((char* nam));
+  #endif
+  void	setdefout _((GV* gv));
+! void	setjmp_tryblock _((JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret));
+  void	set_tryblock_method _((tryblock_f fn));
+  char*	sharepvn _((char* sv, I32 len, U32 hash));
+  HEK*	share_hek _((char* sv, I32 len, U32 hash));
+--- 462,468 ----
+  I32	setenv_getix _((char* nam));
+  #endif
+  void	setdefout _((GV* gv));
+! void	setjmp_tryblock _((TRYVTBL *vtbl, void *locals, void *ret));
+  void	set_tryblock_method _((tryblock_f fn));
+  char*	sharepvn _((char* sv, I32 len, U32 hash));
+  HEK*	share_hek _((char* sv, I32 len, U32 hash));
+Index: scope.c
+*** perl5.004_56/scope.c	Tue Jan 27 08:48:40 1998
+--- src/scope.c	Tue Jan 27 09:20:39 1998
+***************
+*** 18,43 ****
+  /* setjmp/longjmp style tryblock
+     JPRIT 1998-01-25 */
+  
+  static void
+  setjmp_jump()
+  {
+      dTHR;
+!     Siglongjmp(top_env->je_buf, 1);
+  }
+  
+  void
+! setjmp_tryblock(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret)
+  {
+!     assert(je != top_env);
+!     je->je_jump = setjmp_jump;
+!     je->je_prev = top_env;
+!     je->je_ret = JMP_NORMAL;
+!     OP_REG_TO_MEM;
+!     Sigsetjmp(je->je_buf, 1);
+!     OP_MEM_TO_REG;
+!     je->je_mustcatch = FALSE;
+!     top_env = je;
+!     switch (je->je_ret) {
+      case JMP_NORMAL:
+  	if (vtbl->try_normal[0])
+  	    (*vtbl->try_normal[0])(locals,ret);
+--- 18,44 ----
+  /* setjmp/longjmp style tryblock
+     JPRIT 1998-01-25 */
+  
++ struct setjmpenv {
++     JMPENV		je0;	/*must be first for cast to JMPENV*/
++     Sigjmp_buf		je_buf;		
++ };
++ typedef struct setjmpenv SETJMPENV;
++ 
+  static void
+  setjmp_jump()
+  {
+      dTHR;
+!     Siglongjmp(((SETJMPENV*)top_env)->je_buf, 1);
+  }
+  
+  void
+! setjmp_tryblock(TRYVTBL *vtbl, void *locals, void *ret)
+  {
+!     SETJMPENV je;
+!     JMPENV_INIT(je, setjmp_jump);
+!     Sigsetjmp(je.je_buf, 1);
+!     JMPENV_TRY(je);
+!     switch (JMPENV_RET(je)) {
+      case JMP_NORMAL:
+  	if (vtbl->try_normal[0])
+  	    (*vtbl->try_normal[0])(locals,ret);
+***************
+*** 54,61 ****
+  	PerlIO_printf(PerlIO_stderr(), "tryblock: ABNORMAL\n");
+  	exit(1);
+      }
+!     top_env = je->je_prev;
+!     switch (je->je_ret) {
+      case JMP_NORMAL:
+  	if (vtbl->try_normal[1])
+  	    (*vtbl->try_normal[1])(locals,ret);
+--- 55,62 ----
+  	PerlIO_printf(PerlIO_stderr(), "tryblock: ABNORMAL\n");
+  	exit(1);
+      }
+!     JMPENV_POP(je);
+!     switch (JMPENV_RET(je)) {
+      case JMP_NORMAL:
+  	if (vtbl->try_normal[1])
+  	    (*vtbl->try_normal[1])(locals,ret);
+Index: scope.h
+*** perl5.004_56/scope.h	Tue Jan 27 08:48:40 1998
+--- src/scope.h	Tue Jan 27 09:19:42 1998
+***************
+*** 92,103 ****
+  
+  struct jmpenv {
+      struct jmpenv *	je_prev;
+-     Sigjmp_buf		je_buf;		
+      int			je_ret;		/* return value of last setjmp() */
+      bool		je_mustcatch;	/* longjmp()s must be caught locally */
+      void		(*je_jump)();
+  };
+- 
+  typedef struct jmpenv JMPENV;
+  
+  struct tryvtbl {
+--- 92,101 ----
+***************
+*** 111,121 ****
+  };
+  typedef struct tryvtbl TRYVTBL;
+  
+! typedef void (*tryblock_f)(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret);
+  
+! #define _TRYBLOCK(je,vars,mytry,ret)	(*my_tryblock)(&je,&vars,&mytry,ret)
+! #define TRYBLOCK(je,vars,mytry)		_TRYBLOCK(je,vars,mytry,0)
+! #define TRYBLOCKi(je,vars,mytry,ret)	_TRYBLOCK(je,vars,mytry,&ret)
+  
+  #ifdef OP_IN_REGISTER
+  #define OP_REG_TO_MEM	opsave = op
+--- 109,119 ----
+  };
+  typedef struct tryvtbl TRYVTBL;
+  
+! typedef void (*tryblock_f)(TRYVTBL *vtbl, void *locals, void *ret);
+  
+! #define _TRYBLOCK(mytry,vars,ret)	(*my_tryblock)(&mytry,&vars,ret)
+! #define TRYBLOCK(mytry,vars)		_TRYBLOCK(mytry,vars,0)
+! #define TRYBLOCKi(mytry,vars,ret)	_TRYBLOCK(mytry,vars,&ret)
+  
+  #ifdef OP_IN_REGISTER
+  #define OP_REG_TO_MEM	opsave = op
+***************
+*** 125,132 ****
+  #define OP_MEM_TO_REG	NOOP
+  #endif
+  
+- #define dJMPENV		JMPENV cur_env
+- 
+  #define JMPENV_TOPINIT(top)			\
+  STMT_START {					\
+      top.je_prev = NULL;				\
+--- 123,128 ----
+***************
+*** 134,139 ****
+--- 130,158 ----
+      top.je_mustcatch = TRUE;			\
+  } STMT_END
+  
++ #define JMPENV_INIT(env, jmp)			\
++ STMT_START {					\
++     ((JMPENV*)&env)->je_prev = top_env;		\
++     ((JMPENV*)&env)->je_ret = JMP_NORMAL;	\
++     ((JMPENV*)&env)->je_jump = jmp;		\
++     OP_REG_TO_MEM;				\
++ } STMT_END
++ 
++ #define JMPENV_TRY(env)				\
++ STMT_START {					\
++     OP_MEM_TO_REG;				\
++     ((JMPENV*)&env)->je_mustcatch = FALSE;	\
++     top_env = (JMPENV*)&env;			\
++ } STMT_END
++ 
++ #define JMPENV_POP(env) 			\
++ STMT_START {					\
++     assert(top_env == &env);			\
++     top_env = top_env->je_prev;			\
++ } STMT_END
++ 
++ #define JMPENV_RET(env) ((JMPENV*)&env)->je_ret
++ 
+  #define JMPENV_JUMP(v)						\
+      STMT_START {						\
+  	OP_REG_TO_MEM;						\
