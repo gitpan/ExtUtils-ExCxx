@@ -1,0 +1,287 @@
+Index: perl.h
+*** perl5.004_56/perl.h	Mon Jan 26 10:23:34 1998
+--- src//perl.h	Mon Jan 26 12:59:11 1998
+***************
+*** 1431,1436 ****
+--- 1431,1440 ----
+    INIT("The %s function is unimplemented");
+  EXTCONST char no_myglob[]
+    INIT("\"my\" variable %s can't be in a package");
++ EXTCONST char no_restartop[]
++   INIT("panic: restartop\n");
++ EXTCONST char no_top_env[]
++   INIT("panic: top_env\n");
+  
+  #ifdef DOINIT
+  EXT char *sig_name[] = { SIG_NAME };
+Index: pp_ctl.c
+*** perl5.004_56/pp_ctl.c	Mon Jan 26 12:35:37 1998
+--- src//pp_ctl.c	Mon Jan 26 13:12:32 1998
+***************
+*** 2077,2088 ****
+      }
+  }
+  
+  static OP *
+  docatch(OP *o)
+  {
+      dTHR;
+!     int jmpstat;
+!     OP *oldop = op;
+      dJMPENV;
+  
+      op = o;
+--- 2077,2126 ----
+      }
+  }
+  
++ struct try_docatch_locals {
++     OP *oldop;
++ };
++ typedef struct try_docatch_locals TRY_DOCATCH_LOCALS;
++ #define TRY_DOCATCH_LOCAL(name) ((TRY_DOCATCH_LOCALS*)locals)->name
++ 
++ static void
++ try_docatch_normal0(void *locals, void *ret)
++ {
++     runops();
++ }
++ 
++ static void
++ try_docatch_exception0(void *locals, void *ret)
++ {
++     if (!restartop) {
++ 	PerlIO_printf(PerlIO_stderr(), no_restartop);
++     }
++     else {
++ 	op = restartop;
++ 	restartop = 0;
++ 	runops();
++     }
++ }
++ 
++ static void
++ try_docatch_myexit1(void *locals, void *ret)
++ {
++   op = TRY_DOCATCH_LOCAL(oldop);
++   JMPENV_JUMP(JMP_MYEXIT);
++ }
++ 
+  static OP *
+  docatch(OP *o)
+  {
++     static TRYVTBL DocatchVtbl = { /*DOINIT XXX*/
++ 	"docatch",
++ 	/*before*/		/*after*/
++ 	try_docatch_normal0,	0,
++ 	try_docatch_exception0,	0,
++ 	0,			try_docatch_myexit1
++     };
+      dTHR;
+!     TRY_DOCATCH_LOCALS locals = { op };
+      dJMPENV;
+  
+      op = o;
+***************
+*** 2090,2117 ****
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+!     JMPENV_PUSH(jmpstat);
+!     switch (jmpstat) {
+!     default:				/* topmost level handles it */
+! 	JMPENV_POP;
+! 	op = oldop;
+! 	assert(jmpstat == JMP_MYEXIT);
+! 	JMPENV_JUMP(jmpstat);
+! 	/* NOTREACHED */
+!     case JMP_EXCEPTION:
+! 	if (!restartop) {
+! 	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+! 	    break;
+! 	}
+! 	op = restartop;
+! 	restartop = 0;
+! 	/* FALL THROUGH */
+!     case JMP_NORMAL:
+!         runops();
+! 	break;
+!     }
+!     JMPENV_POP;
+!     op = oldop;
+      return Nullop;
+  }
+  
+--- 2128,2137 ----
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+! 
+!     TRYBLOCK(&cur_env, &locals, &DocatchVtbl);
+! 
+!     op = locals.oldop;
+      return Nullop;
+  }
+  
+Index: scope.c
+*** perl5.004_56/scope.c	Mon Jan 26 10:23:34 1998
+--- src//scope.c	Mon Jan 26 13:11:25 1998
+***************
+*** 15,20 ****
+--- 15,88 ----
+  #include "EXTERN.h"
+  #include "perl.h"
+  
++ /*static*/ void
++ setjmp_jump()
++ {
++     dTHR;
++     Siglongjmp(top_env->je_buf, 1);
++ }
++ 
++ /* setjmp/longjmp style tryblock
++    JPRIT 1998-01-25 */
++ 
++ /*static*/ void
++ setjmp_tryblock(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret)
++ {
++     assert(je != top_env);
++     je->je_jump = setjmp_jump;
++     je->je_prev = top_env;
++     je->je_stat = JMP_NORMAL;
++     OP_REG_TO_MEM;
++     Sigsetjmp(je->je_buf, 1);
++     OP_MEM_TO_REG;
++     je->je_mustcatch = FALSE;
++     top_env = je;
++     switch (je->je_stat) {
++     case JMP_NORMAL:
++ 	if (vtbl->try_normal[0])
++ 	    (*vtbl->try_normal[0])(locals,ret);
++ 	break;
++     case JMP_EXCEPTION:
++ 	if (vtbl->try_exception[0])
++ 	    (*vtbl->try_exception[0])(locals,ret);
++ 	break;
++     case JMP_MYEXIT:
++ 	if (vtbl->try_myexit[0])
++ 	    (*vtbl->try_myexit[0])(locals,ret);
++ 	break;
++     default: 
++ 	PerlIO_printf(PerlIO_stderr(), "tryblock: ABNORMAL status\n");
++ 	exit(1);
++     }
++     top_env = je->je_prev;
++     switch (je->je_stat) {
++     case JMP_NORMAL:
++ 	if (vtbl->try_normal[1])
++ 	    (*vtbl->try_normal[1])(locals,ret);
++ 	break;
++     case JMP_EXCEPTION:
++ 	if (vtbl->try_exception[1])
++ 	    (*vtbl->try_exception[1])(locals,ret);
++ 	break;
++     case JMP_MYEXIT:
++ 	if (vtbl->try_myexit[1])
++ 	    (*vtbl->try_myexit[1])(locals,ret);
++ 	break;
++     }
++ }
++ 
++ /* per-interpreter XXX */
++ tryblock_f my_tryblock = setjmp_tryblock;
++ 
++ void
++ set_tryblock_method(tryblock_f fn)
++ {
++   if (fn)
++     my_tryblock = fn;
++   else
++     my_tryblock = setjmp_tryblock;
++ }
++ 
+  SV**
+  stack_grow(SV **sp, SV **p, int n)
+  {
+Index: scope.h
+*** perl5.004_56/scope.h	Mon Jan 26 12:35:37 1998
+--- src//scope.h	Mon Jan 26 13:05:08 1998
+***************
+*** 95,104 ****
+--- 95,123 ----
+      Sigjmp_buf		je_buf;		
+      int			je_stat;	/* return value of last setjmp() */
+      bool		je_mustcatch;	/* longjmp()s must be caught locally */
++     void		(*je_jump)();
+  };
+  
+  typedef struct jmpenv JMPENV;
+  
++ struct tryvtbl {
++     /* [0] executed before JMPENV_POP
++        [1] executed after JMPENV_POP
++            (NULL pointers are OK) */
++     char *try_context;
++     void (*try_normal[2]) _((void*,void*));
++     void (*try_exception[2]) _((void*,void*));
++     void (*try_myexit[2]) _((void*,void*));
++ };
++ typedef struct tryvtbl TRYVTBL;
++ 
++ typedef void (*tryblock_f)(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret);
++ extern tryblock_f my_tryblock; /*XXX*/
++ 
++ #define _TRYBLOCK(je,vars,mytry,ret)	(*my_tryblock)(je,vars,mytry,ret)
++ #define TRYBLOCK(je,vars,mytry)		_TRYBLOCK(je,vars,mytry,0)
++ #define TRYBLOCKi(je,vars,mytry,ret)	_TRYBLOCK(je,vars,mytry,&ret)
++ 
+  #ifdef OP_IN_REGISTER
+  #define OP_REG_TO_MEM	opsave = op
+  #define OP_MEM_TO_REG	op = opsave
+***************
+*** 116,126 ****
+      top.je_mustcatch = TRUE;			\
+  } STMT_END
+  
+  #define JMPENV_PUSH(v)				\
+      STMT_START {				\
+  	cur_env.je_prev = top_env;		\
+! 	OP_REG_TO_MEM;				\
+  	cur_env.je_stat = JMP_NORMAL;		\
+  	Sigsetjmp(cur_env.je_buf, 1);		\
+  	OP_MEM_TO_REG;				\
+  	top_env = &cur_env;			\
+--- 135,150 ----
+      top.je_mustcatch = TRUE;			\
+  } STMT_END
+  
++ void setjmp_jump();
++ 
++ /*old macros: to be removed*/
++ 
+  #define JMPENV_PUSH(v)				\
+      STMT_START {				\
+  	cur_env.je_prev = top_env;		\
+! 	cur_env.je_jump = setjmp_jump;		\
+  	cur_env.je_stat = JMP_NORMAL;		\
++ 	OP_REG_TO_MEM;				\
+  	Sigsetjmp(cur_env.je_buf, 1);		\
+  	OP_MEM_TO_REG;				\
+  	top_env = &cur_env;			\
+***************
+*** 136,142 ****
+  	OP_REG_TO_MEM;						\
+  	if (top_env->je_prev) {					\
+  	    top_env->je_stat = (v);				\
+! 	    Siglongjmp(top_env->je_buf, 0);			\
+  	}							\
+  	if ((v) == JMP_MYEXIT)					\
+  	    exit(STATUS_NATIVE_EXPORT);				\
+--- 160,166 ----
+  	OP_REG_TO_MEM;						\
+  	if (top_env->je_prev) {					\
+  	    top_env->je_stat = (v);				\
+! 	    (*top_env->je_jump)();				\
+  	}							\
+  	if ((v) == JMP_MYEXIT)					\
+  	    exit(STATUS_NATIVE_EXPORT);				\

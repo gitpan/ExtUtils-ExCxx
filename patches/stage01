@@ -1,0 +1,605 @@
+Index: perl.c
+*** perl5.004_56/perl.c	Mon Jan 26 10:23:33 1998
+--- src/perl.c	Mon Jan 26 12:19:06 1998
+***************
+*** 190,198 ****
+      init_ids();
+      lex_state = LEX_NOTPARSING;
+  
+!     start_env.je_prev = NULL;
+!     start_env.je_ret = -1;
+!     start_env.je_mustcatch = TRUE;
+      top_env     = &start_env;
+      STATUS_ALL_SUCCESS;
+  
+--- 190,196 ----
+      init_ids();
+      lex_state = LEX_NOTPARSING;
+  
+!     JMPENV_TOPINIT(start_env);
+      top_env     = &start_env;
+      STATUS_ALL_SUCCESS;
+  
+***************
+*** 570,576 ****
+      I32 oldscope;
+      AV* comppadlist;
+      dJMPENV;
+!     int ret;
+  
+  #ifdef SETUID_SCRIPTS_ARE_SECURE_NOW
+  #ifdef IAMSUID
+--- 568,574 ----
+      I32 oldscope;
+      AV* comppadlist;
+      dJMPENV;
+!     int jmpstat;
+  
+  #ifdef SETUID_SCRIPTS_ARE_SECURE_NOW
+  #ifdef IAMSUID
+***************
+*** 619,630 ****
+      time(&basetime);
+      oldscope = scopestack_ix;
+  
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     case 1:
+  	STATUS_ALL_FAILURE;
+  	/* FALL THROUGH */
+!     case 2:
+  	/* my_exit() was called */
+  	while (scopestack_ix > oldscope)
+  	    LEAVE;
+--- 617,628 ----
+      time(&basetime);
+      oldscope = scopestack_ix;
+  
+!     JMPENV_PUSH(jmpstat);
+!     switch (jmpstat) {
+!     case JMP_ABNORMAL:
+  	STATUS_ALL_FAILURE;
+  	/* FALL THROUGH */
+!     case JMP_MYEXIT:
+  	/* my_exit() was called */
+  	while (scopestack_ix > oldscope)
+  	    LEAVE;
+***************
+*** 634,640 ****
+  	    call_list(oldscope, endav);
+  	JMPENV_POP;
+  	return STATUS_NATIVE_EXPORT;
+!     case 3:
+  	JMPENV_POP;
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");
+  	return 1;
+--- 632,638 ----
+  	    call_list(oldscope, endav);
+  	JMPENV_POP;
+  	return STATUS_NATIVE_EXPORT;
+!     case JMP_EXCEPTION:
+  	JMPENV_POP;
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");
+  	return 1;
+***************
+*** 966,972 ****
+      dTHR;
+      I32 oldscope;
+      dJMPENV;
+!     int ret;
+  
+      if (!(curinterp = sv_interp))
+  	return 255;
+--- 964,970 ----
+      dTHR;
+      I32 oldscope;
+      dJMPENV;
+!     int jmpstat;
+  
+      if (!(curinterp = sv_interp))
+  	return 255;
+***************
+*** 973,984 ****
+  
+      oldscope = scopestack_ix;
+  
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     case 1:
+  	cxstack_ix = -1;		/* start context stack again */
+  	break;
+!     case 2:
+  	/* my_exit() was called */
+  	while (scopestack_ix > oldscope)
+  	    LEAVE;
+--- 971,982 ----
+  
+      oldscope = scopestack_ix;
+  
+!     JMPENV_PUSH(jmpstat);
+!     switch (jmpstat) {
+!     case JMP_ABNORMAL:
+  	cxstack_ix = -1;		/* start context stack again */
+  	break;
+!     case JMP_MYEXIT:
+  	/* my_exit() was called */
+  	while (scopestack_ix > oldscope)
+  	    LEAVE;
+***************
+*** 992,998 ****
+  #endif
+  	JMPENV_POP;
+  	return STATUS_NATIVE_EXPORT;
+!     case 3:
+  	if (!restartop) {
+  	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  	    FREETMPS;
+--- 990,996 ----
+  #endif
+  	JMPENV_POP;
+  	return STATUS_NATIVE_EXPORT;
+!     case JMP_EXCEPTION:
+  	if (!restartop) {
+  	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  	    FREETMPS;
+***************
+*** 1159,1165 ****
+      static CV *DBcv;
+      bool oldcatch = CATCH_GET;
+      dJMPENV;
+!     int ret;
+      OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+--- 1157,1163 ----
+      static CV *DBcv;
+      bool oldcatch = CATCH_GET;
+      dJMPENV;
+!     int jmpstat;
+      OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+***************
+*** 1214,1227 ****
+  	}
+  	markstack_ptr++;
+  
+! 	JMPENV_PUSH(ret);
+! 	switch (ret) {
+! 	case 0:
+  	    break;
+! 	case 1:
+  	    STATUS_ALL_FAILURE;
+  	    /* FALL THROUGH */
+! 	case 2:
+  	    /* my_exit() was called */
+  	    curstash = defstash;
+  	    FREETMPS;
+--- 1212,1225 ----
+  	}
+  	markstack_ptr++;
+  
+! 	JMPENV_PUSH(jmpstat);
+! 	switch (jmpstat) {
+! 	case JMP_NORMAL:
+  	    break;
+! 	case JMP_ABNORMAL:
+  	    STATUS_ALL_FAILURE;
+  	    /* FALL THROUGH */
+! 	case JMP_MYEXIT:
+  	    /* my_exit() was called */
+  	    curstash = defstash;
+  	    FREETMPS;
+***************
+*** 1230,1236 ****
+  		croak("Callback called exit");
+  	    my_exit_jump();
+  	    /* NOTREACHED */
+! 	case 3:
+  	    if (restartop) {
+  		op = restartop;
+  		restartop = 0;
+--- 1228,1234 ----
+  		croak("Callback called exit");
+  	    my_exit_jump();
+  	    /* NOTREACHED */
+! 	case JMP_EXCEPTION:
+  	    if (restartop) {
+  		op = restartop;
+  		restartop = 0;
+***************
+*** 1301,1307 ****
+      I32 retval;
+      I32 oldscope;
+      dJMPENV;
+!     int ret;
+      OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+--- 1299,1305 ----
+      I32 retval;
+      I32 oldscope;
+      dJMPENV;
+!     int jmpstat;
+      OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+***************
+*** 1326,1339 ****
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     case 0:
+  	break;
+!     case 1:
+  	STATUS_ALL_FAILURE;
+  	/* FALL THROUGH */
+!     case 2:
+  	/* my_exit() was called */
+  	curstash = defstash;
+  	FREETMPS;
+--- 1324,1337 ----
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     JMPENV_PUSH(jmpstat);
+!     switch (jmpstat) {
+!     case JMP_NORMAL:
+  	break;
+!     case JMP_ABNORMAL:
+  	STATUS_ALL_FAILURE;
+  	/* FALL THROUGH */
+!     case JMP_MYEXIT:
+  	/* my_exit() was called */
+  	curstash = defstash;
+  	FREETMPS;
+***************
+*** 1342,1348 ****
+  	    croak("Callback called exit");
+  	my_exit_jump();
+  	/* NOTREACHED */
+!     case 3:
+  	if (restartop) {
+  	    op = restartop;
+  	    restartop = 0;
+--- 1340,1346 ----
+  	    croak("Callback called exit");
+  	my_exit_jump();
+  	/* NOTREACHED */
+!     case JMP_EXCEPTION:
+  	if (restartop) {
+  	    op = restartop;
+  	    restartop = 0;
+***************
+*** 2858,2864 ****
+      line_t oldline = curcop->cop_line;
+      STRLEN len;
+      dJMPENV;
+!     int ret;
+  
+      while (AvFILL(list) >= 0) {
+  	CV *cv = (CV*)av_shift(list);
+--- 2856,2862 ----
+      line_t oldline = curcop->cop_line;
+      STRLEN len;
+      dJMPENV;
+!     int jmpstat;
+  
+      while (AvFILL(list) >= 0) {
+  	CV *cv = (CV*)av_shift(list);
+***************
+*** 2865,2873 ****
+  
+  	SAVEFREESV(cv);
+  
+! 	JMPENV_PUSH(ret);
+! 	switch (ret) {
+! 	case 0: {
+  		SV* atsv = ERRSV;
+  		PUSHMARK(stack_sp);
+  		perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
+--- 2863,2871 ----
+  
+  	SAVEFREESV(cv);
+  
+! 	JMPENV_PUSH(jmpstat);
+! 	switch (jmpstat) {
+! 	case JMP_NORMAL: {
+  		SV* atsv = ERRSV;
+  		PUSHMARK(stack_sp);
+  		perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
+***************
+*** 2886,2895 ****
+  		}
+  	    }
+  	    break;
+! 	case 1:
+  	    STATUS_ALL_FAILURE;
+  	    /* FALL THROUGH */
+! 	case 2:
+  	    /* my_exit() was called */
+  	    while (scopestack_ix > oldscope)
+  		LEAVE;
+--- 2884,2893 ----
+  		}
+  	    }
+  	    break;
+! 	case JMP_ABNORMAL:
+  	    STATUS_ALL_FAILURE;
+  	    /* FALL THROUGH */
+! 	case JMP_MYEXIT:
+  	    /* my_exit() was called */
+  	    while (scopestack_ix > oldscope)
+  		LEAVE;
+***************
+*** 2908,2914 ****
+  	    }
+  	    my_exit_jump();
+  	    /* NOTREACHED */
+! 	case 3:
+  	    if (!restartop) {
+  		PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  		FREETMPS;
+--- 2906,2912 ----
+  	    }
+  	    my_exit_jump();
+  	    /* NOTREACHED */
+! 	case JMP_EXCEPTION:
+  	    if (!restartop) {
+  		PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  		FREETMPS;
+***************
+*** 2917,2923 ****
+  	    JMPENV_POP;
+  	    curcop = &compiling;
+  	    curcop->cop_line = oldline;
+! 	    JMPENV_JUMP(3);
+  	}
+  	JMPENV_POP;
+      }
+--- 2915,2921 ----
+  	    JMPENV_POP;
+  	    curcop = &compiling;
+  	    curcop->cop_line = oldline;
+! 	    JMPENV_JUMP(JMP_EXCEPTION);
+  	}
+  	JMPENV_POP;
+      }
+***************
+*** 2994,3000 ****
+  	LEAVE;
+      }
+  
+!     JMPENV_JUMP(2);
+  }
+  
+  
+--- 2992,2998 ----
+  	LEAVE;
+      }
+  
+!     JMPENV_JUMP(JMP_MYEXIT);
+  }
+  
+  
+Index: pp_ctl.c
+*** perl5.004_56/pp_ctl.c	Mon Jan 26 10:23:33 1998
+--- src/pp_ctl.c	Mon Jan 26 12:16:16 1998
+***************
+*** 1986,1992 ****
+  
+      if (curstack == signalstack) {
+          restartop = retop;
+!         JMPENV_JUMP(3);
+      }
+  
+      RETURNOP(retop);
+--- 1986,1992 ----
+  
+      if (curstack == signalstack) {
+          restartop = retop;
+!         JMPENV_JUMP(JMP_EXCEPTION);
+      }
+  
+      RETURNOP(retop);
+***************
+*** 2081,2087 ****
+  docatch(OP *o)
+  {
+      dTHR;
+!     int ret;
+      OP *oldop = op;
+      dJMPENV;
+  
+--- 2081,2087 ----
+  docatch(OP *o)
+  {
+      dTHR;
+!     int jmpstat;
+      OP *oldop = op;
+      dJMPENV;
+  
+***************
+*** 2090,2103 ****
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+      default:				/* topmost level handles it */
+  	JMPENV_POP;
+  	op = oldop;
+! 	JMPENV_JUMP(ret);
+  	/* NOTREACHED */
+!     case 3:
+  	if (!restartop) {
+  	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  	    break;
+--- 2090,2104 ----
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+!     JMPENV_PUSH(jmpstat);
+!     switch (jmpstat) {
+      default:				/* topmost level handles it */
+  	JMPENV_POP;
+  	op = oldop;
+! 	assert(jmpstat == JMP_MYEXIT);
+! 	JMPENV_JUMP(jmpstat);
+  	/* NOTREACHED */
+!     case JMP_EXCEPTION:
+  	if (!restartop) {
+  	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+  	    break;
+***************
+*** 2105,2111 ****
+  	op = restartop;
+  	restartop = 0;
+  	/* FALL THROUGH */
+!     case 0:
+          runops();
+  	break;
+      }
+--- 2106,2112 ----
+  	op = restartop;
+  	restartop = 0;
+  	/* FALL THROUGH */
+!     case JMP_NORMAL:
+          runops();
+  	break;
+      }
+Index: scope.h
+*** perl5.004_56/scope.h	Mon Jan 26 10:23:34 1998
+--- src/scope.h	Mon Jan 26 12:27:27 1998
+***************
+*** 84,93 ****
+   * GSAR 97-03-27
+   */
+  
+  struct jmpenv {
+      struct jmpenv *	je_prev;
+      Sigjmp_buf		je_buf;		
+!     int			je_ret;		/* return value of last setjmp() */
+      bool		je_mustcatch;	/* longjmp()s must be caught locally */
+  };
+  
+--- 84,99 ----
+   * GSAR 97-03-27
+   */
+  
++ /* status codes detached from setjmp return values JPRIT 1998-01-26 */
++ #define JMP_NORMAL	4
++ #define JMP_ABNORMAL	5
++ #define JMP_MYEXIT	6
++ #define JMP_EXCEPTION	7
++ 
+  struct jmpenv {
+      struct jmpenv *	je_prev;
+      Sigjmp_buf		je_buf;		
+!     int			je_stat;	/* return value of last setjmp() */
+      bool		je_mustcatch;	/* longjmp()s must be caught locally */
+  };
+  
+***************
+*** 102,125 ****
+  #endif
+  
+  #define dJMPENV		JMPENV cur_env
+! #define JMPENV_PUSH(v) \
+!     STMT_START {					\
+! 	cur_env.je_prev = top_env;			\
+! 	OP_REG_TO_MEM;					\
+! 	cur_env.je_ret = Sigsetjmp(cur_env.je_buf, 1);	\
+! 	OP_MEM_TO_REG;					\
+! 	top_env = &cur_env;				\
+! 	cur_env.je_mustcatch = FALSE;			\
+! 	(v) = cur_env.je_ret;				\
+      } STMT_END
+  #define JMPENV_POP \
+      STMT_START { top_env = cur_env.je_prev; } STMT_END
+! #define JMPENV_JUMP(v) \
+      STMT_START {						\
+  	OP_REG_TO_MEM;						\
+! 	if (top_env->je_prev)					\
+! 	    Siglongjmp(top_env->je_buf, (v));			\
+! 	if ((v) == 2)						\
+  	    exit(STATUS_NATIVE_EXPORT);				\
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");	\
+  	exit(1);						\
+--- 108,144 ----
+  #endif
+  
+  #define dJMPENV		JMPENV cur_env
+! 
+! #define JMPENV_TOPINIT(top)			\
+! STMT_START {					\
+!     top.je_prev = NULL;				\
+!     top.je_stat = JMP_ABNORMAL;			\
+!     top.je_mustcatch = TRUE;			\
+! } STMT_END
+! 
+! #define JMPENV_PUSH(v)				\
+!     STMT_START {				\
+! 	cur_env.je_prev = top_env;		\
+! 	OP_REG_TO_MEM;				\
+! 	cur_env.je_stat = JMP_NORMAL;		\
+! 	Sigsetjmp(cur_env.je_buf, 1);		\
+! 	OP_MEM_TO_REG;				\
+! 	top_env = &cur_env;			\
+! 	cur_env.je_mustcatch = FALSE;		\
+! 	(v) = cur_env.je_stat;			\
+      } STMT_END
++ 
+  #define JMPENV_POP \
+      STMT_START { top_env = cur_env.je_prev; } STMT_END
+! 
+! #define JMPENV_JUMP(v)						\
+      STMT_START {						\
+  	OP_REG_TO_MEM;						\
+! 	if (top_env->je_prev) {					\
+! 	    top_env->je_stat = (v);				\
+! 	    Siglongjmp(top_env->je_buf, 0);			\
+! 	}							\
+! 	if ((v) == JMP_MYEXIT)					\
+  	    exit(STATUS_NATIVE_EXPORT);				\
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");	\
+  	exit(1);						\
+Index: util.c
+*** perl5.004_56/util.c	Mon Jan 26 10:23:33 1998
+--- src/util.c	Mon Jan 26 11:48:02 1998
+***************
+*** 1246,1252 ****
+  	  thr, restartop, was_in_eval, top_env));
+  #endif /* USE_THREADS */
+      if ((!restartop && was_in_eval) || top_env->je_prev)
+! 	JMPENV_JUMP(3);
+      return restartop;
+  }
+  
+--- 1246,1252 ----
+  	  thr, restartop, was_in_eval, top_env));
+  #endif /* USE_THREADS */
+      if ((!restartop && was_in_eval) || top_env->je_prev)
+! 	JMPENV_JUMP(JMP_EXCEPTION);
+      return restartop;
+  }
+  
+***************
+*** 1305,1311 ****
+      }
+      if (in_eval) {
+  	restartop = die_where(message);
+! 	JMPENV_JUMP(3);
+      }
+      PerlIO_puts(PerlIO_stderr(),message);
+      (void)PerlIO_flush(PerlIO_stderr());
+--- 1305,1311 ----
+      }
+      if (in_eval) {
+  	restartop = die_where(message);
+! 	JMPENV_JUMP(JMP_EXCEPTION);
+      }
+      PerlIO_puts(PerlIO_stderr(),message);
+      (void)PerlIO_flush(PerlIO_stderr());

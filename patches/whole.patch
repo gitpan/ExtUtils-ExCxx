@@ -1,0 +1,1473 @@
+Index: embed.h
+*** perl5.004_56/embed.h	Wed Dec 17 09:29:36 1997
+--- src/embed.h	Mon Jan 26 14:29:24 1998
+***************
+*** 891,898 ****
+--- 891,900 ----
+  #define scope			Perl_scope
+  #define screaminstr		Perl_screaminstr
+  #define seq_amg			Perl_seq_amg
++ #define set_tryblock_method	Perl_set_tryblock_method
+  #define setdefout		Perl_setdefout
+  #define setenv_getix		Perl_setenv_getix
++ #define setjmp_tryblock		Perl_setjmp_tryblock
+  #define sge_amg			Perl_sge_amg
+  #define sgt_amg			Perl_sgt_amg
+  #define share_hek		Perl_share_hek
+Index: global.sym
+*** perl5.004_56/global.sym	Wed Dec 10 05:35:45 1997
+--- src/global.sym	Mon Jan 26 14:04:25 1998
+***************
+*** 949,954 ****
+--- 949,956 ----
+  screaminstr
+  setdefout
+  setenv_getix
++ setjmp_tryblock
++ set_tryblock_method
+  share_hek
+  sharepvn
+  sighandler
+Index: intrpvar.h
+*** perl5.004_56/intrpvar.h	Wed Dec 17 09:20:23 1997
+--- src/intrpvar.h	Mon Jan 26 13:54:29 1998
+***************
+*** 154,159 ****
+--- 154,161 ----
+  PERLVAR(Iorslen,	STRLEN)		
+  PERLVAR(Iofmt,		char *)		/* $# */
+  
++ PERLVARI(my_tryblock,	tryblock_f,	setjmp_tryblock)
++ 
+  #ifdef USE_THREADS
+  PERLVAR(Ithrsv,		SV *)		/* holds struct perl_thread for main thread */
+  #endif /* USE_THREADS */
+Index: perl.c
+*** perl5.004_56/perl.c	Mon Jan 26 15:08:37 1998
+--- src/perl.c	Mon Jan 26 14:12:26 1998
+***************
+*** 190,198 ****
+      init_ids();
+      lex_state = LEX_NOTPARSING;
+  
+!     start_env.je_prev = NULL;
+!     start_env.je_ret = -1;
+!     start_env.je_mustcatch = TRUE;
+      top_env     = &start_env;
+      STATUS_ALL_SUCCESS;
+  
+--- 190,196 ----
+      init_ids();
+      lex_state = LEX_NOTPARSING;
+  
+!     JMPENV_TOPINIT(start_env);
+      top_env     = &start_env;
+      STATUS_ALL_SUCCESS;
+  
+***************
+*** 558,645 ****
+      Safefree(sv_interp);
+  }
+  
+! int
+! perl_parse(PerlInterpreter *sv_interp, void (*xsinit) (void), int argc, char **argv, char **env)
+  {
+!     dTHR;
+      register SV *sv;
+      register char *s;
+      char *scriptname = NULL;
+      VOL bool dosearch = FALSE;
+      char *validarg = "";
+-     I32 oldscope;
+      AV* comppadlist;
+-     dJMPENV;
+-     int ret;
+  
+- #ifdef SETUID_SCRIPTS_ARE_SECURE_NOW
+- #ifdef IAMSUID
+- #undef IAMSUID
+-     croak("suidperl is no longer needed since the kernel can now execute\n\
+- setuid perl scripts securely.\n");
+- #endif
+- #endif
+- 
+-     if (!(curinterp = sv_interp))
+- 	return 255;
+- 
+- #if defined(NeXT) && defined(__DYNAMIC__)
+-     _dyld_lookup_and_bind
+- 	("__environ", (unsigned long *) &environ_pointer, NULL);
+- #endif /* environ */
+- 
+-     origargv = argv;
+-     origargc = argc;
+- #ifndef VMS  /* VMS doesn't have environ array */
+-     origenviron = environ;
+- #endif
+-     e_tmpname = Nullch;
+- 
+-     if (do_undump) {
+- 
+- 	/* Come here if running an undumped a.out. */
+- 
+- 	origfilename = savepv(argv[0]);
+- 	do_undump = FALSE;
+- 	cxstack_ix = -1;		/* start label stack again */
+- 	init_ids();
+- 	init_postdump_symbols(argc,argv,env);
+- 	return 0;
+-     }
+- 
+-     if (main_root) {
+- 	curpad = AvARRAY(comppad);
+- 	op_free(main_root);
+- 	main_root = Nullop;
+-     }
+-     main_start = Nullop;
+-     SvREFCNT_dec(main_cv);
+-     main_cv = Nullcv;
+- 
+-     time(&basetime);
+-     oldscope = scopestack_ix;
+- 
+-     JMPENV_PUSH(ret);
+-     switch (ret) {
+-     case 1:
+- 	STATUS_ALL_FAILURE;
+- 	/* FALL THROUGH */
+-     case 2:
+- 	/* my_exit() was called */
+- 	while (scopestack_ix > oldscope)
+- 	    LEAVE;
+- 	FREETMPS;
+- 	curstash = defstash;
+- 	if (endav)
+- 	    call_list(oldscope, endav);
+- 	JMPENV_POP;
+- 	return STATUS_NATIVE_EXPORT;
+-     case 3:
+- 	JMPENV_POP;
+- 	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");
+- 	return 1;
+-     }
+- 
+      sv_setpvn(linestr,"",0);
+      sv = newSVpv("",0);		/* first used for -I flags */
+      SAVEFREESV(sv);
+--- 556,586 ----
+      Safefree(sv_interp);
+  }
+  
+! struct try_parse_locals {
+!     void (*xsinit)();
+!     int argc;
+!     char **argv;
+!     char **env;
+!     I32 oldscope;
+! };
+! typedef struct try_parse_locals TRY_PARSE_LOCALS;
+! #define TRY_PARSE_LOCAL(name) ((TRY_PARSE_LOCALS*)locals)->name
+! 
+! static void
+! try_parse_normal0(void *locals, void *ret)
+  {
+!     void (*xsinit)() = TRY_PARSE_LOCAL(xsinit);
+!     int argc = TRY_PARSE_LOCAL(argc);
+!     char **argv = TRY_PARSE_LOCAL(argv);
+!     char **env = TRY_PARSE_LOCAL(env);
+!     
+      register SV *sv;
+      register char *s;
+      char *scriptname = NULL;
+      VOL bool dosearch = FALSE;
+      char *validarg = "";
+      AV* comppadlist;
+  
+      sv_setpvn(linestr,"",0);
+      sv = newSVpv("",0);		/* first used for -I flags */
+      SAVEFREESV(sv);
+***************
+*** 956,1011 ****
+  
+      ENTER;
+      restartop = 0;
+!     JMPENV_POP;
+!     return 0;
+  }
+  
+  int
+! perl_run(PerlInterpreter *sv_interp)
+  {
+      dTHR;
+-     I32 oldscope;
+      dJMPENV;
+      int ret;
+  
+      if (!(curinterp = sv_interp))
+  	return 255;
+  
+!     oldscope = scopestack_ix;
+  
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     case 1:
+! 	cxstack_ix = -1;		/* start context stack again */
+! 	break;
+!     case 2:
+! 	/* my_exit() was called */
+! 	while (scopestack_ix > oldscope)
+! 	    LEAVE;
+! 	FREETMPS;
+! 	curstash = defstash;
+! 	if (endav)
+! 	    call_list(oldscope, endav);
+! #ifdef MYMALLOC
+! 	if (getenv("PERL_DEBUG_MSTATS"))
+! 	    dump_mstats("after execution:  ");
+  #endif
+! 	JMPENV_POP;
+! 	return STATUS_NATIVE_EXPORT;
+!     case 3:
+! 	if (!restartop) {
+! 	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+! 	    FREETMPS;
+! 	    JMPENV_POP;
+! 	    return 1;
+! 	}
+! 	if (curstack != mainstack) {
+! 	    dSP;
+! 	    SWITCHSTACK(curstack, mainstack);
+! 	}
+! 	break;
+      }
+  
+      DEBUG_r(PerlIO_printf(Perl_debug_log, "%s $` $& $' support.\n",
+                      sawampersand ? "Enabling" : "Omitting"));
+  
+--- 897,1002 ----
+  
+      ENTER;
+      restartop = 0;
+!     *(int*)ret = 0;
+  }
+  
++ static void
++ try_parse_exception1(void *locals, void *ret)
++ {
++     PerlIO_printf(PerlIO_stderr(), no_top_env);
++     *(int*)ret = 1;
++ }
++ 
++ static void
++ try_parse_myexit0(void *locals, void *ret)
++ {
++     I32 oldscope = TRY_PARSE_LOCAL(oldscope);
++     while (scopestack_ix > oldscope)
++ 	LEAVE;
++     FREETMPS;
++     curstash = defstash;
++     if (endav)
++ 	call_list(oldscope, endav);
++     *(int*)ret = STATUS_NATIVE_EXPORT;
++ }
++ 
+  int
+! perl_parse(PerlInterpreter *sv_interp, void (*xsinit) (void), int argc, char **argv, char **env)
+  {
++     static TRYVTBL ParseVtbl = {
++ 	"perl_parse",
++ 	try_parse_normal0,	0,
++ 	0,			try_parse_exception1,
++ 	try_parse_myexit0,	0,
++     };
++     TRY_PARSE_LOCALS locals = { xsinit, argc, argv, env };
+      dTHR;
+      dJMPENV;
+      int ret;
+  
++ #ifdef SETUID_SCRIPTS_ARE_SECURE_NOW
++ #ifdef IAMSUID
++ #undef IAMSUID
++     croak("suidperl is no longer needed since the kernel can now execute\n\
++ setuid perl scripts securely.\n");
++ #endif
++ #endif
++ 
+      if (!(curinterp = sv_interp))
+  	return 255;
+  
+! #if defined(NeXT) && defined(__DYNAMIC__)
+!     _dyld_lookup_and_bind
+! 	("__environ", (unsigned long *) &environ_pointer, NULL);
+! #endif /* environ */
+  
+!     origargv = argv;
+!     origargc = argc;
+! #ifndef VMS  /* VMS doesn't have environ array */
+!     origenviron = environ;
+  #endif
+!     e_tmpname = Nullch;
+! 
+!     if (do_undump) {
+! 
+! 	/* Come here if running an undumped a.out. */
+! 
+! 	origfilename = savepv(argv[0]);
+! 	do_undump = FALSE;
+! 	cxstack_ix = -1;		/* start label stack again */
+! 	init_ids();
+! 	init_postdump_symbols(argc,argv,env);
+! 	return 0;
+      }
+  
++     if (main_root) {
++ 	curpad = AvARRAY(comppad);
++ 	op_free(main_root);
++ 	main_root = Nullop;
++     }
++     main_start = Nullop;
++     SvREFCNT_dec(main_cv);
++     main_cv = Nullcv;
++ 
++     time(&basetime);
++     locals.oldscope = scopestack_ix;
++ 
++     TRYBLOCKi(cur_env, locals, ParseVtbl, ret);
++ 
++     return ret;
++ }
++ 
++ struct try_run_locals {
++     I32 oldscope;
++ };
++ typedef struct try_run_locals TRY_RUN_LOCALS;
++ #define TRY_RUN_LOCAL(name) ((TRY_RUN_LOCALS*)locals)->name
++ 
++ static void
++ try_run_normal0(void *locals, void *ret)
++ {
++     I32 oldscope = TRY_RUN_LOCAL(oldscope);
++ 
+      DEBUG_r(PerlIO_printf(Perl_debug_log, "%s $` $& $' support.\n",
+                      sawampersand ? "Enabling" : "Omitting"));
+  
+***************
+*** 1039,1050 ****
+  	op = main_start;
+  	runops();
+      }
+- 
+      my_exit(0);
+-     /* NOTREACHED */
+-     return 0;
+  }
+  
+  SV*
+  perl_get_sv(char *name, I32 create)
+  {
+--- 1030,1094 ----
+  	op = main_start;
+  	runops();
+      }
+      my_exit(0);
+  }
+  
++ static void
++ try_run_exception0(void *locals, void *ret)
++ {
++     if (!restartop) {
++ 	PerlIO_printf(PerlIO_stderr(), no_restartop);
++ 	FREETMPS;
++ 	*(int*)ret = 1;
++     } else {
++ 	if (curstack != mainstack) {
++ 	    dSP;
++ 	    SWITCHSTACK(curstack, mainstack);
++ 	}
++ 	try_run_normal0(locals, ret);
++     }
++ }
++ 
++ static void
++ try_run_myexit0(void *locals, void *ret)
++ {
++     I32 oldscope = TRY_RUN_LOCAL(oldscope);
++ 
++     while (scopestack_ix > oldscope)
++ 	LEAVE;
++     FREETMPS;
++     curstash = defstash;
++     if (endav)
++ 	call_list(oldscope, endav);
++ #ifdef MYMALLOC
++     if (getenv("PERL_DEBUG_MSTATS"))
++ 	dump_mstats("after execution:  ");
++ #endif
++     *(int*)ret = STATUS_NATIVE_EXPORT;
++ }
++ 
++ int
++ perl_run(PerlInterpreter *sv_interp)
++ {
++     static TRYVTBL RunVtbl = {
++ 	"perl_run",
++ 	try_run_normal0,	0,
++ 	try_run_exception0,	0,
++ 	try_run_myexit0,	0
++     };
++     dTHR;
++     TRY_RUN_LOCALS locals = { scopestack_ix };
++     dJMPENV;
++     int ret;
++ 
++     if (!(curinterp = sv_interp))
++ 	return 255;
++ 
++     TRYBLOCKi(cur_env, locals, RunVtbl, ret);
++ 
++     return ret;
++ }
++ 
+  SV*
+  perl_get_sv(char *name, I32 create)
+  {
+***************
+*** 1144,1166 ****
+      return perl_call_sv(*stack_sp--, flags);
+  }
+  
+! /* May be called with any of a CV, a GV, or an SV containing the name. */
+  I32
+  perl_call_sv(SV *sv, I32 flags)
+-        
+-           		/* See G_* flags in cop.h */
+  {
+      dTHR;
+      LOGOP myop;		/* fake syntax tree node */
+      SV** sp = stack_sp;
+-     I32 oldmark;
+      I32 retval;
+-     I32 oldscope;
+      static CV *DBcv;
+      bool oldcatch = CATCH_GET;
+      dJMPENV;
+-     int ret;
+-     OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+  	ENTER;
+--- 1188,1319 ----
+      return perl_call_sv(*stack_sp--, flags);
+  }
+  
+! struct try_callsv_locals {
+!     I32 flags;
+!     OP *myop;
+!     OP *oldop;
+!     I32 oldscope;
+!     I32 oldmark;
+! };
+! typedef struct try_callsv_locals TRY_CALLSV_LOCALS;
+! #define TRY_CALLSV_LOCAL(name) ((TRY_CALLSV_LOCALS*)locals)->name
+! 
+! static void
+! try_callsv_cleanup0(void *locals)
+! {
+!     I32 oldscope = TRY_CALLSV_LOCAL(oldscope);
+! 
+!     if (scopestack_ix > oldscope) {
+! 	SV **newsp;
+! 	PMOP *newpm;
+! 	I32 gimme;
+! 	register PERL_CONTEXT *cx;
+! 	I32 optype;
+! 	
+! 	POPBLOCK(cx,newpm);
+! 	POPEVAL(cx);
+! 	pop_return();
+! 	curpm = newpm;
+! 	LEAVE;
+!     }
+! }
+! 
+! static void
+! try_callsv_runops0(void *locals, void *ret)
+! {
+!     I32 flags = TRY_CALLSV_LOCAL(flags);
+!     OP *myop = TRY_CALLSV_LOCAL(myop);
+!     I32 oldmark = TRY_CALLSV_LOCAL(oldmark);
+! 
+!     if (op == myop)
+! 	op = pp_entersub(ARGS);
+!     if (op)
+! 	runops();
+!     *(int*)ret = stack_sp - (stack_base + oldmark);
+!     if ((flags & G_EVAL) && !(flags & G_KEEPERR))
+! 	sv_setpv(ERRSV,"");
+! }
+! 
+! static void
+! try_callsv_normal0(void *locals, void *ret)
+! {
+!     try_callsv_runops0(locals,ret);
+!     try_callsv_cleanup0(locals);
+! }
+! 
+! static void
+! try_callsv_normal1(void *locals, void *ret)
+! {
+!     I32 flags = TRY_CALLSV_LOCAL(flags);
+!     I32 oldmark = TRY_CALLSV_LOCAL(oldmark);
+!     OP *oldop = TRY_CALLSV_LOCAL(oldop);
+! 
+!     if (flags & G_DISCARD) {
+! 	stack_sp = stack_base + oldmark;
+! 	*(int*)ret = 0;
+! 	FREETMPS;
+! 	LEAVE;
+!     }
+!     op = oldop;
+! }
+! 
+! static void
+! try_callsv_exception0(void *locals, void *ret)
+! {
+!     I32 flags = TRY_CALLSV_LOCAL(flags);
+!     I32 oldmark = TRY_CALLSV_LOCAL(oldmark);
+! 
+!     if (restartop) {
+! 	op = restartop;
+! 	restartop = 0;
+! 	try_callsv_normal0(locals,ret);
+!     }
+!     stack_sp = stack_base + oldmark;
+!     if (flags & G_ARRAY) {
+! 	*(int*)ret = 0;
+!     } else {
+! 	*(int*)ret = 1;
+! 	*++stack_sp = &sv_undef;
+!     }
+!     try_callsv_cleanup0(locals);
+! }
+! 
+! static void
+! try_callsv_myexit0(void *locals, void *ret)
+! {
+!     curstash = defstash;
+!     FREETMPS;
+! }
+! 
+! static void
+! try_callsv_myexit1(void *locals, void *ret)
+! {
+!     if (statusvalue)
+! 	croak("Callback called exit");
+!     my_exit_jump();
+! }
+! 
+! /* May be called with any of a CV, a GV, or an SV containing the name.
+!     For info on the flags bits see G_* in cop.h.
+!      Applogies for convoluted control flow... (Not really :-)
+! */
+  I32
+  perl_call_sv(SV *sv, I32 flags)
+  {
+      dTHR;
++     static TRYVTBL CallsvVtbl = {
++ 	"perl_call_sv",
++ 	try_callsv_normal0,	try_callsv_normal1,
++ 	try_callsv_exception0,	0,
++ 	try_callsv_myexit0,	try_callsv_myexit1
++     };
+      LOGOP myop;		/* fake syntax tree node */
++     TRY_CALLSV_LOCALS locals = { flags, (OP*)&myop, op, 0, 0 };
+      SV** sp = stack_sp;
+      I32 retval;
+      static CV *DBcv;
+      bool oldcatch = CATCH_GET;
+      dJMPENV;
+  
+      if (flags & G_DISCARD) {
+  	ENTER;
+***************
+*** 1179,1186 ****
+  
+      EXTEND(stack_sp, 1);
+      *++stack_sp = sv;
+!     oldmark = TOPMARK;
+!     oldscope = scopestack_ix;
+  
+      if (PERLDB_SUB && curstash != debstash
+  	   /* Handle first BEGIN of -d. */
+--- 1332,1339 ----
+  
+      EXTEND(stack_sp, 1);
+      *++stack_sp = sv;
+!     locals.oldmark = TOPMARK;
+!     locals.oldscope = scopestack_ix;
+  
+      if (PERLDB_SUB && curstash != debstash
+  	   /* Handle first BEGIN of -d. */
+***************
+*** 1213,1292 ****
+  		sv_setpv(ERRSV,"");
+  	}
+  	markstack_ptr++;
+  
+! 	JMPENV_PUSH(ret);
+! 	switch (ret) {
+! 	case 0:
+! 	    break;
+! 	case 1:
+! 	    STATUS_ALL_FAILURE;
+! 	    /* FALL THROUGH */
+! 	case 2:
+! 	    /* my_exit() was called */
+! 	    curstash = defstash;
+! 	    FREETMPS;
+! 	    JMPENV_POP;
+! 	    if (statusvalue)
+! 		croak("Callback called exit");
+! 	    my_exit_jump();
+! 	    /* NOTREACHED */
+! 	case 3:
+! 	    if (restartop) {
+! 		op = restartop;
+! 		restartop = 0;
+! 		break;
+! 	    }
+! 	    stack_sp = stack_base + oldmark;
+! 	    if (flags & G_ARRAY)
+! 		retval = 0;
+! 	    else {
+! 		retval = 1;
+! 		*++stack_sp = &sv_undef;
+! 	    }
+! 	    goto cleanup;
+! 	}
+!     }
+!     else
+  	CATCH_SET(TRUE);
+  
+      if (op == (OP*)&myop)
+! 	op = pp_entersub(ARGS);
+      if (op)
+  	runops();
+!     retval = stack_sp - (stack_base + oldmark);
+!     if ((flags & G_EVAL) && !(flags & G_KEEPERR))
+  	sv_setpv(ERRSV,"");
+  
+!   cleanup:
+!     if (flags & G_EVAL) {
+! 	if (scopestack_ix > oldscope) {
+! 	    SV **newsp;
+! 	    PMOP *newpm;
+! 	    I32 gimme;
+! 	    register PERL_CONTEXT *cx;
+! 	    I32 optype;
+  
+- 	    POPBLOCK(cx,newpm);
+- 	    POPEVAL(cx);
+- 	    pop_return();
+- 	    curpm = newpm;
+- 	    LEAVE;
+- 	}
+- 	JMPENV_POP;
+-     }
+-     else
+- 	CATCH_SET(oldcatch);
+- 
+      if (flags & G_DISCARD) {
+  	stack_sp = stack_base + oldmark;
+! 	retval = 0;
+  	FREETMPS;
+  	LEAVE;
+      }
+      op = oldop;
+-     return retval;
+  }
+  
+  /* Eval a string. The G_EVAL flag is always assumed. */
+  
+  I32
+--- 1366,1459 ----
+  		sv_setpv(ERRSV,"");
+  	}
+  	markstack_ptr++;
++ 	TRYBLOCKi(cur_env, locals, CallsvVtbl, retval);
+  
+!     } else { /* G_EVAL */
+  	CATCH_SET(TRUE);
++ 	try_callsv_runops0(&locals, &retval);
++ 	CATCH_SET(oldcatch);
++ 	try_callsv_normal1(&locals, &retval);
++     }
++     return retval;
++ }
+  
++ struct try_evalsv_locals {
++     I32 flags;
++     OP *myop;
++     OP *oldop;
++     I32 oldscope;
++     I32 oldmark;
++ };
++ typedef struct try_evalsv_locals TRY_EVALSV_LOCALS;
++ #define TRY_EVALSV_LOCAL(name) ((TRY_EVALSV_LOCALS*)locals)->name
++ 
++ static void
++ try_evalsv_normal0(void *locals, void *ret)
++ {
++     I32 flags = TRY_EVALSV_LOCAL(flags);
++     OP *myop = TRY_EVALSV_LOCAL(myop);
++     I32 oldmark = TRY_EVALSV_LOCAL(oldmark);
++ 
+      if (op == (OP*)&myop)
+! 	op = pp_entereval(ARGS);
+      if (op)
+  	runops();
+!     *(int*)ret = stack_sp - (stack_base + oldmark);
+!     if (!(flags & G_KEEPERR))
+  	sv_setpv(ERRSV,"");
++ }
+  
+! static void
+! try_evalsv_normal1(void *locals, void *ret)
+! {
+!     I32 flags = TRY_EVALSV_LOCAL(flags);
+!     I32 oldmark = TRY_EVALSV_LOCAL(oldmark);
+!     OP *oldop = TRY_EVALSV_LOCAL(oldop);
+  
+      if (flags & G_DISCARD) {
+  	stack_sp = stack_base + oldmark;
+! 	*(int*)ret = 0;
+  	FREETMPS;
+  	LEAVE;
+      }
+      op = oldop;
+  }
+  
++ static void
++ try_evalsv_exception0(void *locals, void *ret)
++ {
++     I32 flags = TRY_EVALSV_LOCAL(flags);
++     I32 oldmark = TRY_EVALSV_LOCAL(oldmark);
++ 
++     if (restartop) {
++ 	op = restartop;
++ 	restartop = 0;
++ 	try_evalsv_normal0(locals,ret);
++     }
++     stack_sp = stack_base + oldmark;
++     if (flags & G_ARRAY)
++ 	*(int*)ret = 0;
++     else {
++ 	*(int*)ret = 1;
++ 	*++stack_sp = &sv_undef;
++     }
++ }
++ 
++ static void
++ try_evalsv_myexit0(void *locals, void *ret)
++ {
++     curstash = defstash;
++     FREETMPS;
++ }
++ 
++ static void
++ try_evalsv_myexit1(void *locals, void *ret)
++ {
++     if (statusvalue)
++ 	croak("Callback called exit");
++     my_exit_jump();
++ }
++ 
+  /* Eval a string. The G_EVAL flag is always assumed. */
+  
+  I32
+***************
+*** 1294,1308 ****
+         
+            		/* See G_* flags in cop.h */
+  {
+      dTHR;
+      UNOP myop;		/* fake syntax tree node */
+      SV** sp = stack_sp;
+-     I32 oldmark = sp - stack_base;
+      I32 retval;
+-     I32 oldscope;
+      dJMPENV;
+!     int ret;
+!     OP* oldop = op;
+  
+      if (flags & G_DISCARD) {
+  	ENTER;
+--- 1461,1478 ----
+         
+            		/* See G_* flags in cop.h */
+  {
++     static TRYVTBL EvalsvVtbl = {
++ 	"perl_eval_sv",
++ 	try_evalsv_normal0,	try_evalsv_normal1,
++ 	try_evalsv_exception0,	try_evalsv_normal1,
++ 	try_evalsv_myexit0,	try_evalsv_myexit1
++     };
+      dTHR;
+      UNOP myop;		/* fake syntax tree node */
+      SV** sp = stack_sp;
+      I32 retval;
+      dJMPENV;
+!     TRY_EVALSV_LOCALS locals = { flags, (OP*)&myop, op, 0, sp - stack_base };
+  
+      if (flags & G_DISCARD) {
+  	ENTER;
+***************
+*** 1314,1320 ****
+      Zero(op, 1, UNOP);
+      EXTEND(stack_sp, 1);
+      *++stack_sp = sv;
+!     oldscope = scopestack_ix;
+  
+      if (!(flags & G_NOARGS))
+  	myop.op_flags = OPf_STACKED;
+--- 1484,1490 ----
+      Zero(op, 1, UNOP);
+      EXTEND(stack_sp, 1);
+      *++stack_sp = sv;
+!     locals.oldscope = scopestack_ix;
+  
+      if (!(flags & G_NOARGS))
+  	myop.op_flags = OPf_STACKED;
+***************
+*** 1326,1380 ****
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     case 0:
+! 	break;
+!     case 1:
+! 	STATUS_ALL_FAILURE;
+! 	/* FALL THROUGH */
+!     case 2:
+! 	/* my_exit() was called */
+! 	curstash = defstash;
+! 	FREETMPS;
+! 	JMPENV_POP;
+! 	if (statusvalue)
+! 	    croak("Callback called exit");
+! 	my_exit_jump();
+! 	/* NOTREACHED */
+!     case 3:
+! 	if (restartop) {
+! 	    op = restartop;
+! 	    restartop = 0;
+! 	    break;
+! 	}
+! 	stack_sp = stack_base + oldmark;
+! 	if (flags & G_ARRAY)
+! 	    retval = 0;
+! 	else {
+! 	    retval = 1;
+! 	    *++stack_sp = &sv_undef;
+! 	}
+! 	goto cleanup;
+!     }
+  
+-     if (op == (OP*)&myop)
+- 	op = pp_entereval(ARGS);
+-     if (op)
+- 	runops();
+-     retval = stack_sp - (stack_base + oldmark);
+-     if (!(flags & G_KEEPERR))
+- 	sv_setpv(ERRSV,"");
+- 
+-   cleanup:
+-     JMPENV_POP;
+-     if (flags & G_DISCARD) {
+- 	stack_sp = stack_base + oldmark;
+- 	retval = 0;
+- 	FREETMPS;
+- 	LEAVE;
+-     }
+-     op = oldop;
+      return retval;
+  }
+  
+--- 1496,1503 ----
+      if (flags & G_KEEPERR)
+  	myop.op_flags |= OPf_SPECIAL;
+  
+!     TRYBLOCKi(cur_env, locals, EvalsvVtbl, retval);
+  
+      return retval;
+  }
+  
+***************
+*** 2851,2925 ****
+  }
+  #endif /* USE_THREADS */
+  
+  void
+  call_list(I32 oldscope, AV *list)
+  {
+      dTHR;
+!     line_t oldline = curcop->cop_line;
+!     STRLEN len;
+      dJMPENV;
+-     int ret;
+  
+      while (AvFILL(list) >= 0) {
+! 	CV *cv = (CV*)av_shift(list);
+! 
+! 	SAVEFREESV(cv);
+! 
+! 	JMPENV_PUSH(ret);
+! 	switch (ret) {
+! 	case 0: {
+! 		SV* atsv = ERRSV;
+! 		PUSHMARK(stack_sp);
+! 		perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
+! 		(void)SvPV(atsv, len);
+! 		if (len) {
+! 		    JMPENV_POP;
+! 		    curcop = &compiling;
+! 		    curcop->cop_line = oldline;
+! 		    if (list == beginav)
+! 			sv_catpv(atsv, "BEGIN failed--compilation aborted");
+! 		    else
+! 			sv_catpv(atsv, "END failed--cleanup aborted");
+! 		    while (scopestack_ix > oldscope)
+! 			LEAVE;
+! 		    croak("%s", SvPVX(atsv));
+! 		}
+! 	    }
+! 	    break;
+! 	case 1:
+! 	    STATUS_ALL_FAILURE;
+! 	    /* FALL THROUGH */
+! 	case 2:
+! 	    /* my_exit() was called */
+! 	    while (scopestack_ix > oldscope)
+! 		LEAVE;
+! 	    FREETMPS;
+! 	    curstash = defstash;
+! 	    if (endav)
+! 		call_list(oldscope, endav);
+! 	    JMPENV_POP;
+! 	    curcop = &compiling;
+! 	    curcop->cop_line = oldline;
+! 	    if (statusvalue) {
+! 		if (list == beginav)
+! 		    croak("BEGIN failed--compilation aborted");
+! 		else
+! 		    croak("END failed--cleanup aborted");
+! 	    }
+! 	    my_exit_jump();
+! 	    /* NOTREACHED */
+! 	case 3:
+! 	    if (!restartop) {
+! 		PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+! 		FREETMPS;
+! 		break;
+! 	    }
+! 	    JMPENV_POP;
+! 	    curcop = &compiling;
+! 	    curcop->cop_line = oldline;
+! 	    JMPENV_JUMP(3);
+! 	}
+! 	JMPENV_POP;
+      }
+  }
+  
+--- 2974,3083 ----
+  }
+  #endif /* USE_THREADS */
+  
++ struct try_calllist_locals {
++     I32 oldscope;
++     AV *list;
++     CV *cv;
++     line_t oldline;
++ };
++ typedef struct try_calllist_locals TRY_CALLLIST_LOCALS;
++ #define TRY_CALLLIST_LOCAL(name) ((TRY_CALLLIST_LOCALS*)locals)->name
++ 
++ static void
++ try_calllist_normal0(void *locals, void *ret)
++ {
++     CV *cv = TRY_CALLLIST_LOCAL(cv);
++ 
++     PUSHMARK(stack_sp);
++     perl_call_sv((SV*)cv, G_EVAL|G_DISCARD);
++ }
++ 
++ static void
++ try_calllist_normal1(void *locals, void *ret)
++ {
++     AV *list = TRY_CALLLIST_LOCAL(list);
++     I32 oldscope = TRY_CALLLIST_LOCAL(oldscope);
++     line_t oldline = TRY_CALLLIST_LOCAL(oldline);
++ 
++     STRLEN len;
++     SV* atsv = ERRSV;
++     (void)SvPV(atsv, len);
++     if (len) {
++ 	curcop = &compiling;
++ 	curcop->cop_line = oldline;
++ 	if (list == beginav)
++ 	    sv_catpv(atsv, "BEGIN failed--compilation aborted");
++ 	else
++ 	    sv_catpv(atsv, "END failed--cleanup aborted");
++ 	while (scopestack_ix > oldscope)
++ 	    LEAVE;
++ 	croak("%s", SvPVX(atsv));
++     }
++ }
++ 
++ static void
++ try_calllist_exception1(void *locals, void *ret)
++ {
++     line_t oldline = TRY_CALLLIST_LOCAL(oldline);
++ 
++     if (!restartop) {
++ 	PerlIO_printf(PerlIO_stderr(), no_restartop);
++ 	FREETMPS;
++     }
++     else {
++ 	curcop = &compiling;
++ 	curcop->cop_line = oldline;
++ 	JMPENV_JUMP(JMP_EXCEPTION);
++     }
++ }
++ 
++ static void
++ try_calllist_myexit0(void *locals, void *ret)
++ {
++     I32 oldscope = TRY_CALLLIST_LOCAL(oldscope);
++ 
++     while (scopestack_ix > oldscope)
++ 	LEAVE;
++     FREETMPS;
++     curstash = defstash;
++     if (endav)
++ 	call_list(oldscope, endav);
++ }
++ 
++ static void
++ try_calllist_myexit1(void *locals, void *ret)
++ {
++     AV *list = TRY_CALLLIST_LOCAL(list);
++     line_t oldline = TRY_CALLLIST_LOCAL(oldline);
++ 
++     curcop = &compiling;
++     curcop->cop_line = oldline;
++     if (statusvalue) {
++ 	if (list == beginav)
++ 	    croak("BEGIN failed--compilation aborted");
++ 	else
++ 	    croak("END failed--cleanup aborted");
++     }
++     my_exit_jump();
++ }
++ 
+  void
+  call_list(I32 oldscope, AV *list)
+  {
++     static TRYVTBL CalllistVtbl = {
++ 	"call_list",
++ 	try_calllist_normal0,	try_calllist_normal1,
++ 	0,			try_calllist_exception1,
++ 	try_calllist_myexit0,	try_calllist_myexit1
++     };
+      dTHR;
+!     TRY_CALLLIST_LOCALS locals = { oldscope, list, 0, curcop->cop_line };
+      dJMPENV;
+  
+      while (AvFILL(list) >= 0) {
+! 	locals.cv = (CV*)av_shift(list);
+! 	SAVEFREESV(locals.cv);
+! 	TRYBLOCK(cur_env, locals, CalllistVtbl);  /*hoist? XXX*/
+      }
+  }
+  
+***************
+*** 2994,3000 ****
+  	LEAVE;
+      }
+  
+!     JMPENV_JUMP(2);
+  }
+  
+  
+--- 3152,3158 ----
+  	LEAVE;
+      }
+  
+!     JMPENV_JUMP(JMP_MYEXIT);
+  }
+  
+  
+Index: perl.h
+*** perl5.004_56/perl.h	Mon Jan 26 15:08:35 1998
+--- src/perl.h	Mon Jan 26 12:59:11 1998
+***************
+*** 1431,1436 ****
+--- 1431,1440 ----
+    INIT("The %s function is unimplemented");
+  EXTCONST char no_myglob[]
+    INIT("\"my\" variable %s can't be in a package");
++ EXTCONST char no_restartop[]
++   INIT("panic: restartop\n");
++ EXTCONST char no_top_env[]
++   INIT("panic: top_env\n");
+  
+  #ifdef DOINIT
+  EXT char *sig_name[] = { SIG_NAME };
+Index: pp_ctl.c
+*** perl5.004_56/pp_ctl.c	Mon Jan 26 15:08:38 1998
+--- src/pp_ctl.c	Mon Jan 26 13:35:38 1998
+***************
+*** 1986,1992 ****
+  
+      if (curstack == signalstack) {
+          restartop = retop;
+!         JMPENV_JUMP(3);
+      }
+  
+      RETURNOP(retop);
+--- 1986,1992 ----
+  
+      if (curstack == signalstack) {
+          restartop = retop;
+!         JMPENV_JUMP(JMP_EXCEPTION);
+      }
+  
+      RETURNOP(retop);
+***************
+*** 2077,2088 ****
+      }
+  }
+  
+  static OP *
+  docatch(OP *o)
+  {
+      dTHR;
+!     int ret;
+!     OP *oldop = op;
+      dJMPENV;
+  
+      op = o;
+--- 2077,2125 ----
+      }
+  }
+  
++ struct try_docatch_locals {
++     OP *oldop;
++ };
++ typedef struct try_docatch_locals TRY_DOCATCH_LOCALS;
++ #define TRY_DOCATCH_LOCAL(name) ((TRY_DOCATCH_LOCALS*)locals)->name
++ 
++ static void
++ try_docatch_normal0(void *locals, void *ret)
++ {
++     runops();
++ }
++ 
++ static void
++ try_docatch_exception0(void *locals, void *ret)
++ {
++     if (!restartop) {
++ 	PerlIO_printf(PerlIO_stderr(), no_restartop);
++     }
++     else {
++ 	op = restartop;
++ 	restartop = 0;
++ 	runops();
++     }
++ }
++ 
++ static void
++ try_docatch_myexit1(void *locals, void *ret)
++ {
++   op = TRY_DOCATCH_LOCAL(oldop);
++   JMPENV_JUMP(JMP_MYEXIT);
++ }
++ 
+  static OP *
+  docatch(OP *o)
+  {
++     static TRYVTBL DocatchVtbl = {
++ 	"docatch",
++ 	try_docatch_normal0,	0,
++ 	try_docatch_exception0,	0,
++ 	0,			try_docatch_myexit1
++     };
+      dTHR;
+!     TRY_DOCATCH_LOCALS locals = { op };
+      dJMPENV;
+  
+      op = o;
+***************
+*** 2090,2116 ****
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+!     JMPENV_PUSH(ret);
+!     switch (ret) {
+!     default:				/* topmost level handles it */
+! 	JMPENV_POP;
+! 	op = oldop;
+! 	JMPENV_JUMP(ret);
+! 	/* NOTREACHED */
+!     case 3:
+! 	if (!restartop) {
+! 	    PerlIO_printf(PerlIO_stderr(), "panic: restartop\n");
+! 	    break;
+! 	}
+! 	op = restartop;
+! 	restartop = 0;
+! 	/* FALL THROUGH */
+!     case 0:
+!         runops();
+! 	break;
+!     }
+!     JMPENV_POP;
+!     op = oldop;
+      return Nullop;
+  }
+  
+--- 2127,2136 ----
+      assert(CATCH_GET == TRUE);
+      DEBUG_l(deb("Setting up local jumplevel %p, was %p\n", &cur_env, top_env));
+  #endif
+! 
+!     TRYBLOCK(cur_env, locals, DocatchVtbl);
+! 
+!     op = locals.oldop;
+      return Nullop;
+  }
+  
+Index: proto.h
+*** perl5.004_56/proto.h	Wed Dec 17 09:16:35 1997
+--- src/proto.h	Mon Jan 26 14:04:33 1998
+***************
+*** 462,467 ****
+--- 462,469 ----
+  I32	setenv_getix _((char* nam));
+  #endif
+  void	setdefout _((GV* gv));
++ void	setjmp_tryblock _((JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret));
++ void	set_tryblock_method _((tryblock_f fn));
+  char*	sharepvn _((char* sv, I32 len, U32 hash));
+  HEK*	share_hek _((char* sv, I32 len, U32 hash));
+  Signal_t sighandler _((int sig));
+Index: scope.c
+*** perl5.004_56/scope.c	Mon Jan 26 15:08:36 1998
+--- src/scope.c	Mon Jan 26 14:18:50 1998
+***************
+*** 15,20 ****
+--- 15,85 ----
+  #include "EXTERN.h"
+  #include "perl.h"
+  
++ /* setjmp/longjmp style tryblock
++    JPRIT 1998-01-25 */
++ 
++ static void
++ setjmp_jump()
++ {
++     dTHR;
++     Siglongjmp(top_env->je_buf, 1);
++ }
++ 
++ void
++ setjmp_tryblock(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret)
++ {
++     assert(je != top_env);
++     je->je_jump = setjmp_jump;
++     je->je_prev = top_env;
++     je->je_ret = JMP_NORMAL;
++     OP_REG_TO_MEM;
++     Sigsetjmp(je->je_buf, 1);
++     OP_MEM_TO_REG;
++     je->je_mustcatch = FALSE;
++     top_env = je;
++     switch (je->je_ret) {
++     case JMP_NORMAL:
++ 	if (vtbl->try_normal[0])
++ 	    (*vtbl->try_normal[0])(locals,ret);
++ 	break;
++     case JMP_EXCEPTION:
++ 	if (vtbl->try_exception[0])
++ 	    (*vtbl->try_exception[0])(locals,ret);
++ 	break;
++     case JMP_MYEXIT:
++ 	if (vtbl->try_myexit[0])
++ 	    (*vtbl->try_myexit[0])(locals,ret);
++ 	break;
++     default: 
++ 	PerlIO_printf(PerlIO_stderr(), "tryblock: ABNORMAL\n");
++ 	exit(1);
++     }
++     top_env = je->je_prev;
++     switch (je->je_ret) {
++     case JMP_NORMAL:
++ 	if (vtbl->try_normal[1])
++ 	    (*vtbl->try_normal[1])(locals,ret);
++ 	break;
++     case JMP_EXCEPTION:
++ 	if (vtbl->try_exception[1])
++ 	    (*vtbl->try_exception[1])(locals,ret);
++ 	break;
++     case JMP_MYEXIT:
++ 	if (vtbl->try_myexit[1])
++ 	    (*vtbl->try_myexit[1])(locals,ret);
++ 	break;
++     }
++ }
++ 
++ void
++ set_tryblock_method(tryblock_f fn)
++ {
++     if (fn)
++ 	my_tryblock = fn;
++     else
++ 	my_tryblock = setjmp_tryblock;
++ }
++ 
+  SV**
+  stack_grow(SV **sp, SV **p, int n)
+  {
+Index: scope.h
+*** perl5.004_56/scope.h	Mon Jan 26 15:08:38 1998
+--- src/scope.h	Mon Jan 26 14:18:41 1998
+***************
+*** 84,98 ****
+--- 84,122 ----
+   * GSAR 97-03-27
+   */
+  
++ /* status codes detached from setjmp return values JPRIT 1998-01-26 */
++ #define JMP_NORMAL	4
++ #define JMP_ABNORMAL	5
++ #define JMP_MYEXIT	6
++ #define JMP_EXCEPTION	7
++ 
+  struct jmpenv {
+      struct jmpenv *	je_prev;
+      Sigjmp_buf		je_buf;		
+      int			je_ret;		/* return value of last setjmp() */
+      bool		je_mustcatch;	/* longjmp()s must be caught locally */
++     void		(*je_jump)();
+  };
+  
+  typedef struct jmpenv JMPENV;
+  
++ struct tryvtbl {
++     /* [0] executed before JMPENV_POP
++        [1] executed after JMPENV_POP
++            (NULL pointers are OK) */
++     char *try_context;
++     void (* try_normal    [2]) _((void*,void*));
++     void (* try_exception [2]) _((void*,void*));
++     void (* try_myexit    [2]) _((void*,void*));
++ };
++ typedef struct tryvtbl TRYVTBL;
++ 
++ typedef void (*tryblock_f)(JMPENV *je, void *locals, TRYVTBL *vtbl, void *ret);
++ 
++ #define _TRYBLOCK(je,vars,mytry,ret)	(*my_tryblock)(&je,&vars,&mytry,ret)
++ #define TRYBLOCK(je,vars,mytry)		_TRYBLOCK(je,vars,mytry,0)
++ #define TRYBLOCKi(je,vars,mytry,ret)	_TRYBLOCK(je,vars,mytry,&ret)
++ 
+  #ifdef OP_IN_REGISTER
+  #define OP_REG_TO_MEM	opsave = op
+  #define OP_MEM_TO_REG	op = opsave
+***************
+*** 102,125 ****
+  #endif
+  
+  #define dJMPENV		JMPENV cur_env
+! #define JMPENV_PUSH(v) \
+!     STMT_START {					\
+! 	cur_env.je_prev = top_env;			\
+! 	OP_REG_TO_MEM;					\
+! 	cur_env.je_ret = Sigsetjmp(cur_env.je_buf, 1);	\
+! 	OP_MEM_TO_REG;					\
+! 	top_env = &cur_env;				\
+! 	cur_env.je_mustcatch = FALSE;			\
+! 	(v) = cur_env.je_ret;				\
+!     } STMT_END
+! #define JMPENV_POP \
+!     STMT_START { top_env = cur_env.je_prev; } STMT_END
+! #define JMPENV_JUMP(v) \
+      STMT_START {						\
+  	OP_REG_TO_MEM;						\
+! 	if (top_env->je_prev)					\
+! 	    Siglongjmp(top_env->je_buf, (v));			\
+! 	if ((v) == 2)						\
+  	    exit(STATUS_NATIVE_EXPORT);				\
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");	\
+  	exit(1);						\
+--- 126,147 ----
+  #endif
+  
+  #define dJMPENV		JMPENV cur_env
+! 
+! #define JMPENV_TOPINIT(top)			\
+! STMT_START {					\
+!     top.je_prev = NULL;				\
+!     top.je_ret = JMP_ABNORMAL;			\
+!     top.je_mustcatch = TRUE;			\
+! } STMT_END
+! 
+! #define JMPENV_JUMP(v)						\
+      STMT_START {						\
+  	OP_REG_TO_MEM;						\
+! 	if (top_env->je_prev) {					\
+! 	    top_env->je_ret = (v);				\
+! 	    (*top_env->je_jump)();				\
+! 	}							\
+! 	if ((v) == JMP_MYEXIT)					\
+  	    exit(STATUS_NATIVE_EXPORT);				\
+  	PerlIO_printf(PerlIO_stderr(), "panic: top_env\n");	\
+  	exit(1);						\
+Index: util.c
+*** perl5.004_56/util.c	Mon Jan 26 15:08:38 1998
+--- src/util.c	Mon Jan 26 11:48:02 1998
+***************
+*** 1246,1252 ****
+  	  thr, restartop, was_in_eval, top_env));
+  #endif /* USE_THREADS */
+      if ((!restartop && was_in_eval) || top_env->je_prev)
+! 	JMPENV_JUMP(3);
+      return restartop;
+  }
+  
+--- 1246,1252 ----
+  	  thr, restartop, was_in_eval, top_env));
+  #endif /* USE_THREADS */
+      if ((!restartop && was_in_eval) || top_env->je_prev)
+! 	JMPENV_JUMP(JMP_EXCEPTION);
+      return restartop;
+  }
+  
+***************
+*** 1305,1311 ****
+      }
+      if (in_eval) {
+  	restartop = die_where(message);
+! 	JMPENV_JUMP(3);
+      }
+      PerlIO_puts(PerlIO_stderr(),message);
+      (void)PerlIO_flush(PerlIO_stderr());
+--- 1305,1311 ----
+      }
+      if (in_eval) {
+  	restartop = die_where(message);
+! 	JMPENV_JUMP(JMP_EXCEPTION);
+      }
+      PerlIO_puts(PerlIO_stderr(),message);
+      (void)PerlIO_flush(PerlIO_stderr());
