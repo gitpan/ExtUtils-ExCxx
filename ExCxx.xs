@@ -95,3 +95,10 @@ set_tryblock(type)
 	  Perl_set_tryblock_method(0);
 	else
 	  croak("set_tryblock(%s): unknown", SvPV(type,na));
+
+void
+nest(cv)
+	SV *cv
+	CODE:
+	PUSHMARK(sp);
+	perl_call_sv(cv, G_NOARGS);

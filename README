@@ -1,6 +1,6 @@
 =head1 NAME
 
-  ExtUtils::ExCxx - Let perl use ANSI C++ exceptions.
+  ExtUtils::ExCxx - Switch to ANSI C++ exceptions
 
 =head1 SYNOPSIS
 
@@ -8,11 +8,21 @@
 
 =head1 DESCRIPTION
 
-Replaces perl's default tryblock method with a C++ try/throw style
-method.  This should be completely transparent (except to extensions
-that secretly invoke low-level exception handling routines).
+Switch perl's default TRYBLOCK method to a C++ try/throw style method
+at run-time.  This should be completely transparent (except to
+extensions that covertly invoke such low-level exception handling
+routines :-).
 
-=head1 PATCH
+=head1 IS C++ FASTER?
+
+Yes, for some definition of 'faster':
+
+  $ perl -Mblib ./bench.pl
+
+  [ setjmp ] 20 secs (18.79 usr  2.02 sys = 20.81 cpu)
+  [ cxx    ] 17 secs (17.14 usr  0.00 sys = 17.14 cpu)
+
+=head1 PATCHES
 
 At the moment, this extension requires patches to the perl source
 code.  Hopefully, these changes will make it into the next developer
@@ -24,7 +34,7 @@ release.  Either apply stage0[1-3] or the whole.patch to 5.004_56.
 
 =head2 ALSO
 
-call_list should probably be optimized to call tryblock only once
+call_list should probably be optimized to call TRYBLOCK only once
 instead of doing it for each BEGIN or END block.  However, the control
 flow is messy enough that I didn't attempt it.
 
@@ -68,7 +78,7 @@ or implied warranty.  It may be used, redistributed and/or modified
 under the terms of the Perl Artistic License (see
 http://www.perl.com/perl/misc/Artistic.html)
 
-The author hereby releases the patches to the perl source code to the
-public domain.  Thanks a ton!  pritikin@mindspring.com
+The author hereby releases the included patches to the perl source
+code to the public domain.  Thanks a ton!  pritikin@mindspring.com
 
 =cut

@@ -11,3 +11,4 @@ patches/stage03
 patches/whole.patch
 t/runlevel.t
 t/sort.t
+bench.pl
